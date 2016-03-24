@@ -33,7 +33,16 @@ module.exports = testCase({
   setUp: function(callback) {
     // Mock net object so we never try to send any real data
     connectionObserver = new Events();
-    connectionObserver.destroy = function() {};
+    connectionObserver.writable = false;
+    connectionObserver.on('connect', function(){
+      this.writable = true;
+    });
+    connectionObserver.destroy = function(){
+      this.writable = false;
+    };
+    connectionObserver.on('error', function(){
+      this.writable = false;
+    });
     this.stompClient = new StompClient('127.0.0.1', 2098, 'user', 'pass', '1.0');
 
     oldCreateConnection = net.createConnection;
@@ -625,6 +634,100 @@ module.exports = testCase({
     };
 
     connectionObserver.emit('connect');
+  },
+
+  'check to see that .publishable property evaluates to false when the client is not connected' : function(test){
+    var self = this;
+    test.expect(1);
+    test.equal(self.stompClient.publishable, false);
+    test.done();
+  },
+
+  'check to see that .publishable property evaluates to true after a successful connect and false after a successful disconnect': function (test) {
+    var self = this;
+
+    test.expect(2);
+
+    sendHook = function (stompFrame) {
+      self.stompClient.stream.emit('data', 'CONNECTED\nsession:blah\n\n\0');
+    };
+
+    self.stompClient.connect(function(){
+      test.equal(self.stompClient.publishable, true);
+      sendHook = function(stompFrame) {
+        // test.equal(self.stompClient.publishable, true);
+      };
+
+      self.stompClient.disconnect(function(){
+        test.equal(self.stompClient.publishable, false);
+        test.done();
+      });
+    });
+
+    connectionObserver.end = function() {
+      connectionObserver.end = function(){};
+      process.nextTick(function() {
+        connectionObserver.writable = false; 
+        connectionObserver.emit('end'); 
+      });
+    };
+    connectionObserver.emit('connect');
+
+  },
+
+  'check to see that .publishable property is false after a parse error' : function(test){
+    var self = this;
+
+    test.expect(1);
+
+    sendHook = function (stompFrame) {
+      self.stompClient.stream.emit('data', 'CONNECTED\n\n\n\0');
+    };
+
+    this.stompClient.on('error', function (err) {
+      //wrapped in nextTick because the event is emitted before the stream is destroyed.
+      process.nextTick(function(){
+        test.equal(self.stompClient.publishable, false);
+        test.done();
+      });
+    });
+
+    this.stompClient.connect(function() {});
+    connectionObserver.emit('connect');
+  },
+
+  'check to see that .publishable property is false when the client is reconnecting and that .publishable property is true when the client has reconnected' : function(test){
+
+    test.expect(3);
+    var self = this;
+
+    this.stompClient2 = new StompClient(
+      'test.host.net',1234,'uname','pw', '1.1', 'q1.host.net', 
+      { retries: 2, delay: 1000 });
+
+    sendHook = function (stompFrame) {
+      self.stompClient2.stream.emit('data', 'CONNECTED\nsession:blah\n\n\0');
+    };
+    
+    this.stompClient2.on('reconnecting', function(){
+
+      test.equal(self.stompClient2.publishable, false);
+      // connectionObserver.emit('connect');
+      //we need to put the above on a timer
+    });
+
+    this.stompClient2.on('reconnect', function(){
+      test.equal(self.stompClient2.publishable, true);
+      delete self.stompClient2;
+      test.done();
+    });
+
+    this.stompClient2.connect(function(){
+      test.equal(self.stompClient2.publishable, true);
+      self.stompClient2.stream.emit('error');
+    });
+    connectionObserver.emit('connect');
+
   }
 
 });
